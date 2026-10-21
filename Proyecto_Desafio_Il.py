@@ -148,7 +148,7 @@ def ver_historial(lista_expedientes):
             print(f"{i}. Código: {exp['codigo']} | Remitente: {exp['remitente']} | DNI/RUC: {exp['identificacion']} | Fecha: {exp['fecha']}") 
 
  
-# --- MENÚ DE EJECUCIÓN --- 
+# --- EJECUTAR MENÚ DE GESTIÓN DE EXPEDIENTES --- 
 
 if __name__ == "__main__": 
 
