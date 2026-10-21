@@ -70,7 +70,7 @@ def registrar_expediente(lista_expedientes):
 
     area_destino = input("Ingrese área de destino: ") 
 
-    # Fecha automática 
+    # Uso de datetime para fechas
 
     fecha_actual = datetime.date.today().strftime("%Y-%m-%d") 
 
