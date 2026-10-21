@@ -192,3 +192,4 @@ if __name__ == "__main__":
         else: 
 
             print("Opción no válida. Intente nuevamente.")
+# Validación avanzada            
