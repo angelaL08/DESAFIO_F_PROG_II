@@ -607,65 +607,399 @@ def registrar_expediente(bd, usuario):
         print("\n  Registro cancelado. No se guardó nada.")
         return
 
- 
+# Recién aquí se guarda: si el usuario cancela antes, no queda nada a medias
+    codigo = siguiente_codigo(bd)
+    tramite = {"codigo": codigo, "fecha": fecha, "hora": hora,
+               "identificacion": ciudadano["identificacion"], "remitente": ciudadano["remitente"],
+               "motivo": motivo, "descripcion": descripcion, "tipoDoc": tipo, "areaDestino": area,
+               "folios": folios, "usuario": usuario["dni"], "estado": "Registrado"}
+    bd["tramites"].append(tramite)
+    guardar_ciudadano(bd, ciudadano)
+    agregar_seguimiento(bd, codigo, "Registrado", "Ingreso del expediente", usuario)
+    guardar_todo(bd)
+    notificar(bd, tramite, "Su expediente fue recibido correctamente")
+    print(f"\n  Expediente N° {codigo} registrado y guardado.\n")
+    mostrar_ficha(bd, tramite)
+    ruta = generar_cargo(tramite, usuario)
+    if ruta: print(f"\n  Cargo de recepción listo para entregar: cargos/{os.path.basename(ruta)}")
 
-def ver_historial(lista_expedientes): 
+# ==== SECCIÓN 9: OPCIONES 2 Y 3: LISTADO ORDENADO Y BÚSQUEDA RÁPIDA =========================
+def listar(bd, usuario):
+    """Opción 2: lista los expedientes ordenados con el método burbuja."""
+    titulo("Listado de expedientes ordenados")
+    if not bd["tramites"]:
+        print("  No hay expedientes registrados.")
+        return
+    criterio = elegir("Ordenar por:", CRITERIOS)
+    orden = elegir("Orden:", ["Ascendente", "Descendente"])
+    ordenada = ordenar_burbuja(bd["tramites"], criterio, orden == "Descendente")
+    mostrar_resultados(bd, ordenada, f"Expedientes ordenados por {criterio.lower()}, {orden.lower()}")
 
-    print(f"\n--- HISTORIAL DE EXPEDIENTES (Total: {len(lista_expedientes)}) ---") 
+def buscar_rapido(bd, usuario):
+    """Opción 3: una sola casilla que detecta si se escribió un nombre, un DNI o RUC, o un N°."""
+    titulo("Búsqueda rápida", cancelable=True)
+    print("  Escriba un nombre (o parte), un DNI de 8 dígitos, un RUC de 11 dígitos")
+    print("  o un número de expediente. No importan tildes ni mayúsculas.\n")
+    texto = pedir_texto("Buscar: ")
+    if solo_digitos(texto) and len(texto) in [8, 11]:
+        resultados = [t for t in bd["tramites"] if t["identificacion"] == texto]
+        criterio = f"DNI o RUC {texto}"
+    elif solo_digitos(texto):
+        t = buscar_codigo(bd["tramites"], texto)
+        resultados = [t] if t else []
+        criterio = f"expediente N° {int(texto)}"
+    else:
+        resultados = [t for t in bd["tramites"] if sin_tildes(texto) in sin_tildes(t["remitente"])]
+        criterio = f"nombre {texto}"
+    if not resultados:
+        print("\n  No se encontró ningún expediente. Revise lo escrito e intente de nuevo.")
+        return
+    mostrar_resultados(bd, ordenar_burbuja(resultados, "Código"), f"Resultados para {criterio}")
 
-    if len(lista_expedientes) == 0: 
+# ==== SECCIÓN 10: OPCIÓN 4: CONSULTAS =======================================================
+def menu_consultas(bd, usuario):
+    """Opción 4: consulta por número, fecha, estado o pendientes."""
+    titulo("Consultas de expedientes")
+    opcion = submenu(["Por número de expediente", "Por fecha o rango de fechas", "Por estado",
+                      "Pendientes de atención, los más antiguos primero", "Volver al menú"])
+    if opcion == 5: return False
+    limpiar_pantalla()
+    if opcion == 1:
+        titulo("Consulta por número de expediente", cancelable=True)
+        t = pedir_expediente(bd)
+        if t:
+            pantalla_expediente(bd, t)                     # ficha + historial
+    elif opcion == 2:
+        titulo("Consulta por fecha", cancelable=True)
+        desde, hasta, periodo = pedir_periodo()
+        lista = ordenar_burbuja(filtrar_por_fecha(bd["tramites"], desde, hasta), "Fecha")
+        mostrar_resultados(bd, lista, f"Expedientes de {periodo}")
+    elif opcion == 3:
+        titulo("Consulta por estado", cancelable=True)
+        estado = elegir("Estado a consultar:", ESTADOS)
+        lista = ordenar_burbuja(filtrar_por_estado(bd["tramites"], estado), "Fecha")
+        mostrar_resultados(bd, lista, f"Expedientes en estado {estado}")
+    else:
+        pendientes = ordenar_burbuja(filtrar_pendientes(bd["tramites"]), "Fecha")
+        if pendientes:
+            mostrar_resultados(bd, pendientes, "Expedientes pendientes de atención", con_dias=True)
+        else: print("  No hay expedientes pendientes. Todo está al día.")
 
-        print("No hay expedientes registrados.") 
+# ==== SECCIÓN 11: OPCIÓN 5: SEGUIMIENTO Y CAMBIO DE ESTADO ==================================
+def pedir_observacion():
+    """Observado: el motivo y su detalle son obligatorios."""
+    categoria = elegir("Motivo de la observación:", MOTIVOS_OBSERVACION, otro=True)
+    return f"{categoria}: " + pedir_texto("\nDetalle de la observación, obligatorio: ", minimo=10)
 
-    else: 
+def pedir_rechazo(identidad_no_acreditada=False):
+    """Rechazado: motivo insubsanable y fundamento escrito obligatorio."""
+    if identidad_no_acreditada:
+        categoria = MOTIVOS_RECHAZO[0]
+        print(f"\n  Motivo del rechazo: {categoria}")
+    else: categoria = elegir("Motivo insubsanable del rechazo:", MOTIVOS_RECHAZO, otro=True)
+    return f"{categoria}: " + pedir_texto("\nFundamento explícito del rechazo, obligatorio: ", minimo=15)
 
-        for i, exp in enumerate(lista_expedientes, 1): 
+def pedir_detalle_cambio(t, nuevo):
+    """Pide lo que exige cada estado. Devuelve (estado definitivo, observación)."""
+    if nuevo == "Observado": return nuevo, pedir_observacion()
+    if nuevo == "Rechazado": return nuevo, pedir_rechazo()
+    if nuevo == "Subsanado":
+        print(f"\n  Verificación de identidad\n  Titular registrado: {t['remitente']}, {t['identificacion']}\n")
+        if confirmar("¿Se presentó el documento de identidad del TITULAR?"):
+            return nuevo, "Subsanación: " + pedir_texto("\nDetalle de lo subsanado, obligatorio: ", minimo=5)
+        # Si no es el titular, no se puede subsanar: el expediente se rechaza
+        print("\n  No se puede subsanar: la identidad presentada no corresponde al titular.")
+        print("  El expediente debe rechazarse de forma definitiva.")
+        return "Rechazado", pedir_rechazo(identidad_no_acreditada=True)
+    resolucion = limpiar(leer("\nNúmero de resolución, Enter para ninguna: "))      # Aprobado o Concluido
+    return nuevo, f"Resolución N° {resolucion}" if resolucion else f"Expediente {nuevo.lower()}"
 
-            print(f"{i}. Código: {exp['codigo']} | Remitente: {exp['remitente']} | DNI/RUC: {exp['identificacion']} | Fecha: {exp['fecha']}") 
+def cambiar_estado(bd, t, usuario):
+    """Aplica la máquina de estados: solo permite las transiciones de TRANSICIONES."""
+    permitidos = TRANSICIONES.get(t["estado"], [])
+    if not permitidos:
+        print(f"  El expediente está {t['estado']}, es un estado final y no admite más cambios.")
+        return
+    elegido = elegir(f"Estado actual: {t['estado']}. Elija el nuevo estado:", permitidos)
+    nuevo, obs = pedir_detalle_cambio(t, elegido)
+    if nuevo in ESTADOS_FINALES: print("\n  Atención: esta acción es definitiva y cierra el expediente.")
+    if not confirmar(f"\n¿Confirmar el cambio a {nuevo}?"):
+        print("\n  Cambio cancelado. El expediente no se modificó.")
+        return
+    t["estado"] = nuevo
+    agregar_seguimiento(bd, t["codigo"], nuevo, obs, usuario)      # queda en el historial
+    guardar_todo(bd)
+    telefono, correo = notificar(bd, t, f"Su expediente pasó a estado {nuevo}. {obs}")
+    print(f"\n  Estado actualizado a {nuevo} y registrado en el historial.")
+    if nuevo == "Observado":
+        seccion("PROTOCOLO DE COMUNICACIÓN: notifique al administrado ahora")
+        print(f"  Remitente: {t['remitente']}\n  Teléfono : {telefono}\n  Correo   : {correo}")
+        print("\n  La notificación quedó registrada en notificaciones.txt")
 
- 
-# --- EJECUTAR MENÚ DE GESTIÓN DE EXPEDIENTES --- 
+def derivar_area(bd, t, usuario):
+    """Cambia el área actual del expediente y lo anota en el historial."""
+    area = elegir("Derivar el expediente a:", AREAS, otro=True)
+    if area == t["areaDestino"]: print("\n  El expediente ya está en esa área.")
+    elif confirmar(f"\n¿Confirmar la derivación a {area}?"):
+        agregar_seguimiento(bd, t["codigo"], t["estado"], f"Derivado de {t['areaDestino']} a {area}", usuario)
+        t["areaDestino"] = area
+        guardar_todo(bd)
+        print("\n  Expediente derivado y registrado en el historial.")
+    else: print("\n  Derivación cancelada.")
 
-if __name__ == "__main__": 
+def gestionar_seguimiento(bd, usuario):
+    """Opción 5: pantalla de trabajo sobre un expediente (cambiar estado o derivar)."""
+    titulo("Seguimiento de expedientes", cancelable=True)
+    t = pedir_expediente(bd)
+    if not t: return
+    while True:
+        pantalla_expediente(bd, t)
+        if t["estado"] in ESTADOS_FINALES:
+            print(f"\n  El expediente está {t['estado']}, es un estado final y no admite más cambios.")
+            return
+        print()
+        opcion = submenu(["Cambiar estado", "Derivar a otra área", "Volver al menú"])
+        if opcion == 3: return False
+        print()
+        if opcion == 1:
+            cambiar_estado(bd, t, usuario)
+        else:
+            derivar_area(bd, t, usuario)
+        if t["estado"] in ESTADOS_FINALES: return
+        pausa()
 
-    expedientes = [] 
+# ==== SECCIÓN 12: OPCIÓN 6: REPORTES Y ESTADÍSTICAS (valores agrupados) =====================
+def agrupar(lista, campo, valores_iniciales=()):
+    """Cuenta cuántos expedientes hay por cada valor del campo. Devuelve un diccionario."""
+    conteo = {valor: 0 for valor in valores_iniciales}
+    for t in lista: conteo[t[campo]] = conteo.get(t[campo], 0) + 1
+    return conteo
 
-    while True: 
+def lineas_grupo(encabezado, conteo, total, ordenar_por_clave=False):
+    """Convierte un conteo en líneas de texto con cantidad, porcentaje y barra."""
+    pares = ordenar_burbuja(list(conteo.items()), "Clave" if ordenar_por_clave else "Cantidad", not ordenar_por_clave)
+    lineas = [f"  {encabezado.upper()}", "  " + "-" * 66]
+    for clave, cantidad in pares:
+        porcentaje = cantidad * 100 / total
+        lineas.append(f"  {clave:<34}{cantidad:>5}   {porcentaje:5.1f}%   {'#' * round(porcentaje / 5)}")
+    return lineas + ["  " + "-" * 66, f"  {'TOTAL':<34}{total:>5}"]
 
-        print("\n--- GESTIÓN DE EXPEDIENTES ---") 
+def bloque(bd, lista, nombre):
+    """Construye un bloque del reporte: fecha, estado, tipo, motivo o usuario."""
+    total = len(lista)
+    if nombre == "fecha":
+        return lineas_grupo("Expedientes registrados por fecha", agrupar(lista, "fecha"), total, True)
+    if nombre == "estado": return lineas_grupo("Expedientes por estado", agrupar(lista, "estado", ESTADOS), total)
+    if nombre == "tipo": return lineas_grupo("Expedientes por tipo de documento", agrupar(lista, "tipoDoc"), total)
+    if nombre == "motivo": return lineas_grupo("Expedientes por motivo del trámite", agrupar(lista, "motivo"), total)
+    por_nombre = {}
+    for dni, cantidad in agrupar(lista, "usuario").items():
+        por_nombre[nombre_usuario(bd, dni)] = por_nombre.get(nombre_usuario(bd, dni), 0) + cantidad
+    return lineas_grupo("Expedientes registrados por usuario", por_nombre, total)
 
-        print("1. Registrar expediente") 
+BLOQUES = {1: ["fecha"], 2: ["estado"], 3: ["tipo", "motivo"], 4: ["usuario"],
+           5: ["fecha", "estado", "tipo", "motivo", "usuario"]}
 
-        print("2. Buscar expediente") 
+def lineas_reporte(bd, lista, opcion, periodo):
+    """Arma el reporte elegido (siempre agrupado). La opción 5 agrega totales al inicio."""
+    lineas = []
+    if opcion == 5:
+        pendientes = filtrar_pendientes(lista)
+        promedio = sum(dias_desde(t["fecha"]) for t in pendientes) / len(pendientes) if pendientes else 0
+        lineas = ["  RESUMEN GENERAL DE LA GESTIÓN", f"  Periodo: {periodo}", "",
+                  f"  Total de expedientes : {len(lista)}",
+                  f"  Total de folios      : {sum(t['folios'] for t in lista)}",
+                  f"  Pendientes           : {len(pendientes)}",
+                  f"  Finalizados          : {len(lista) - len(pendientes)}",
+                  f"  Antigüedad promedio de los pendientes: {promedio:.1f} días"]
+    for nombre in BLOQUES[opcion]: lineas += (["", ""] if lineas else []) + bloque(bd, lista, nombre)
+    return lineas
 
-        print("3. Ver historial y total de registros") 
+def exportar_reporte(lineas, usuario):
+    """Guarda el reporte en un archivo de texto con fecha y hora en el nombre."""
+    fecha, hora = ahora()
+    marca = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ruta = os.path.join(CARPETA, f"reporte_{marca}.txt")
+    cabecera = ["REPORTE ESTADÍSTICO - MESA DE PARTES DIGITAL",
+                f"Generado: {fecha} {hora} por {usuario['nombres']} {usuario['apellidos']}", "=" * 66, ""]
+    if escribir_texto(ruta, cabecera + lineas): print(f"  Reporte generado: {os.path.basename(ruta)}")
 
-        print("4. Salir") 
+def menu_reportes(bd, usuario):
+    """Opción 6: pide el periodo y muestra reportes agrupados."""
+    titulo("Reportes y estadísticas", cancelable=True)
+    if not bd["tramites"]:
+        print("  No hay expedientes registrados.")
+        return
+    desde, hasta, periodo = pedir_periodo()
+    lista = filtrar_por_fecha(bd["tramites"], desde, hasta)
+    if not lista:
+        print("\n  No hay expedientes en ese periodo.")
+        return
+    while True:
+        limpiar_pantalla()
+        titulo("Reportes y estadísticas")
+        print(f"  Periodo: {periodo}, {plural(len(lista), 'expediente')}\n")
+        opcion = submenu(["Por fecha de registro", "Por estado", "Por tipo de documento y motivo",
+                          "Por usuario registrador", "Resumen general",
+                          "Exportar el resumen general a un archivo", "Volver al menú"])
+        if opcion == 7: return False
+        limpiar_pantalla()
+        print()
+        if opcion == 6:
+            exportar_reporte(lineas_reporte(bd, lista, 5, periodo), usuario)
+        else: print("\n".join(lineas_reporte(bd, lista, opcion, periodo)))
+        pausa()
 
-        opcion = input("Seleccione una opción: ") 
+# ==== SECCIÓN 13: OPCIONES 7 AL 10: ADMINISTRACIÓN Y CUENTA =================================
+def registrar_usuario(bd, actual=None):
+    """Opción 7: crea un usuario. El primero del sistema es Administrador automáticamente."""
+    titulo("Registrar usuario", cancelable=True)
+    dni = pedir_dni()
+    while buscar_usuario(bd, dni):
+        print("  Error: ya existe un usuario con ese DNI.")
+        dni = pedir_dni()
+    apellidos = pedir_nombre("Apellidos: ")
+    nombres = pedir_nombre("Nombres: ")
+    clave = pedir_clave_nueva("Clave, mínimo 6 caracteres: ")
+    if not bd["usuarios"]:
+        rol = "Administrador"
+        print("\n  Es el primer usuario del sistema y será Administrador.")
+    elif actual and actual["rol"] == "Administrador": rol = elegir("Rol del usuario:", ROLES)
+    else: rol = "Mesa de Partes"
+    bd["usuarios"].append({"dni": dni, "apellidos": apellidos, "nombres": nombres,
+                           "clave": cifrar(dni, clave), "rol": rol})
+    guardar_todo(bd)
+    print(f"\n  Usuario {nombres} {apellidos} registrado como {rol}.")
 
-         
-        if opcion == "1": 
+def listar_usuarios(bd, usuario):
+    titulo("Usuarios del sistema")
+    print(f"  {'DNI':<10}{'Apellidos y nombres':<36}{'Rol'}\n  " + "-" * 60)
+    for u in bd["usuarios"]: print(f"  {u['dni']:<10}{(u['apellidos'] + ', ' + u['nombres'])[:34]:<36}{u['rol']}")
+    print("  " + "-" * 60 + f"\n  Total: {plural(len(bd['usuarios']), 'usuario')}")
 
-            registrar_expediente(expedientes) 
+def eliminar(bd, usuario):
+    """Opción 9 (solo Administrador): borra el expediente y todo su historial."""
+    titulo("Eliminar expediente", cancelable=True)
+    t = pedir_expediente(bd, permitir_ultimo=False)
+    if not t: return
+    pantalla_expediente(bd, t, con_historial=False)
+    print("\n  Se borrará el expediente y todo su historial.")
+    if confirmar("\n¿Seguro que desea eliminarlo?"):
+        bd["tramites"].remove(t)
+        bd["seguimiento"] = [s for s in bd["seguimiento"] if s["codigo"] != t["codigo"]]
+        guardar_todo(bd)
+        print("\n  Expediente eliminado.")
+    else: print("\n  Operación cancelada.")
 
-        elif opcion == "2": 
+def cambiar_clave(bd, usuario):
+    titulo("Cambiar mi clave", cancelable=True)
+    if not clave_correcta(usuario, leer_clave("Clave actual: ")):
+        print("  Error: la clave actual es incorrecta.")
+        return
+    usuario["clave"] = cifrar(usuario["dni"], pedir_clave_nueva("Nueva clave, mínimo 6 caracteres: "))
+    guardar_todo(bd)
+    print("\n  Clave actualizada.")
 
-            codigo = input("Ingrese el código a buscar: ") 
+# ==== SECCIÓN 14: MENÚ PRINCIPAL Y PROGRAMA =================================================
+# Cada opción: número -> (texto del menú, función que la ejecuta, roles que pueden usarla)
+MENU = {
+    "1": ("Registrar expediente", registrar_expediente, ["Administrador", "Mesa de Partes"]),
+    "2": ("Listar expedientes ordenados", listar, ROLES),
+    "3": ("Búsqueda rápida", buscar_rapido, ROLES),
+    "4": ("Consultas por número, fecha, estado e historial", menu_consultas, ROLES),
+    "5": ("Seguimiento, cambio de estado y derivación", gestionar_seguimiento, ROLES),
+    "6": ("Reportes y estadísticas", menu_reportes, ROLES),
+    "7": ("Registrar nuevo usuario", registrar_usuario, ["Administrador"]),
+    "8": ("Ver usuarios", listar_usuarios, ["Administrador"]),
+    "9": ("Eliminar expediente", eliminar, ["Administrador"]),
+    "10": ("Cambiar mi clave", cambiar_clave, ROLES),
+}
+GRUPOS_MENU = [("TRÁMITES", ["1", "2", "3", "4", "5", "6"]), ("ADMINISTRACIÓN", ["7", "8", "9"]), ("CUENTA", ["10"])]
 
-            buscar_expediente(expedientes, codigo) 
+def puede_usar(usuario, opcion):
+    """Controla qué roles pueden usar cada opción del menú."""
+    return usuario["rol"] in MENU[opcion][2]
 
-        elif opcion == "3": 
+def resumen_del_dia(bd):
+    hoy = ahora()[0]
+    observados = len(filtrar_por_estado(bd["tramites"], "Observado"))
+    seccion(f"Resumen de hoy, {hoy}")
+    print(f"  Registrados hoy        : {len(filtrar_por_fecha(bd['tramites'], hoy, hoy))}")
+    print(f"  Pendientes de atención : {len(filtrar_pendientes(bd['tramites']))}")
+    print(f"  Observados sin subsanar: {observados}")
 
-            ver_historial(expedientes) 
+def mostrar_menu(bd, usuario):
+    limpiar_pantalla()
+    titulo("Mesa de Partes Digital")
+    print(f"  Usuario: {usuario['nombres']} {usuario['apellidos']}    Rol: {usuario['rol']}")
+    resumen_del_dia(bd)
+    for nombre_grupo, numeros in GRUPOS_MENU:
+        seccion(nombre_grupo)
+        for n in numeros:
+            if puede_usar(usuario, n): print(f"  {n:>2}. {MENU[n][0]}")
+    print("\n   0. Cerrar sesión\n")
 
-        elif opcion == "4": 
+def menu_principal(bd, usuario):
+    """Bucle del menú. Ejecuta la función de la opción elegida y vuelve a mostrarlo."""
+    while True:
+        mostrar_menu(bd, usuario)
+        opcion = input("Seleccione una opción: ").strip()
+        if opcion == "0":
+            guardar_todo(bd)
+            return
+        if opcion not in MENU or not puede_usar(usuario, opcion):
+            print("\n  Esa opción no existe. Elija uno de los números del menú.")
+            pausa()
+            continue
+        limpiar_pantalla()
+        try:
+            resultado = MENU[opcion][1](bd, usuario)
+        except Cancelado:
+            print("\n  Operación cancelada. No se guardó ningún cambio pendiente.")
+            resultado = None
+        if resultado is not False:       # False significa que la opción ya volvió sola al menú
+            pausa()
 
-            print("Saliendo del programa...") 
+def main():
+    bd = cargar_todo()
+    while not bd["usuarios"]:            # sin usuarios: obliga a crear el primero (Administrador)
+        limpiar_pantalla()
+        print("\n  No hay usuarios registrados. Cree el primer usuario, que será Administrador.")
+        try:
+            registrar_usuario(bd)
+            pausa()
+        except Cancelado:
+            if sin_tildes(input("\n  ¿Desea salir del programa? s/n: ").strip()) in ["s", "si"]: return
+    while True:
+        limpiar_pantalla()
+        titulo("Acceso al sistema")
+        print(f"  {plural(len(bd['usuarios']), 'usuario')}, {plural(len(bd['tramites']), 'expediente')}, "
+              f"{plural(len(bd['seguimiento']), 'movimiento')}\n  Datos guardados en: {CARPETA}")
+        for aviso in AVISOS: print(f"\n  Aviso: {aviso}")
+        print("\n  1. Iniciar sesión\n  2. Salir\n")
+        opcion = input("Seleccione una opción: ").strip()
+        if opcion == "1":
+            limpiar_pantalla()
+            try:
+                usuario = login(bd)
+            except Cancelado:
+                print("\n  Operación cancelada.")
+                usuario = None
+            if usuario:
+                menu_principal(bd, usuario)
+            else:
+                pausa()
+        elif opcion == "2":
+            guardar_todo(bd)
+            print("\n  Datos guardados. Hasta pronto.")
+            break
+        else:
+            print("\n  Esa opción no existe.")
+            pausa()
 
-            break 
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\n  Programa interrumpido. Los cambios ya registrados fueron guardados.")
 
-        else: 
-
-            print("Opción no válida. Intente nuevamente.")
-# Validación avanzada            
