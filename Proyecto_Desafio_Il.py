@@ -1,9 +1,18 @@
-import datetime 
+import datetime
+import hashlib
+import os
+import sys
 
-def registrar_expediente(lista_expedientes): 
-
-    codigo = input("Ingrese código de expediente (ej. EXP-101): ") 
-
+# ==== SECCIÓN 1: CONFIGURACIÓN Y CONSTANTES =================================================
+ENTIDAD = "Municipalidad Distrital de Víctor Larco Herrera"
+CARPETA = os.path.dirname(os.path.abspath(__file__))        # los archivos se guardan junto al programa
+ARCH_USUARIOS = os.path.join(CARPETA, "usuarios.txt")
+ARCH_CIUDADANOS = os.path.join(CARPETA, "ciudadanos.txt")
+ARCH_TRAMITES = os.path.join(CARPETA, "tramites.txt")
+ARCH_SEGUIMIENTO = os.path.join(CARPETA, "seguimiento.txt")
+ARCH_NOTIFICACIONES = os.path.join(CARPETA, "notificaciones.txt")
+CARPETA_CARGOS = os.path.join(CARPETA, "cargos")
+SEP = "|"                                                    # separador de campos en los .txt
      
 
     # 1. Validar nombre (no permite vacíos ni números) 
